@@ -376,14 +376,14 @@
     <button class="timer-bar__expand" id="timerExpand" aria-expanded="false" aria-controls="timerLog">
       <span>
         <span class="timer-bar__time" id="timerDisplay">0:00</span>
-        <span class="timer-bar__hint">recupero</span>
+        <span class="timer-bar__hint" id="timerHint">premi "Fine serie" appena finisci</span>
       </span>
       <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
     </button>
   </div>
   <div class="timer-bar__controls">
-    <button class="timer-btn timer-btn--primary" id="timerToggle">Avvia</button>
-    <button class="timer-btn" id="timerLap">Segna serie</button>
+    <button class="timer-btn timer-btn--primary" id="timerMain">Fine serie</button>
+    <button class="timer-btn" id="timerPause" disabled>Pausa</button>
     <button class="timer-btn timer-btn--ghost" id="timerReset">Reset</button>
   </div>
   <div class="timer-bar__log" id="timerLog"></div>
@@ -452,7 +452,7 @@
       checks: { petto:{}, dorso:{}, spalle:{}, gambe:{} },
       bonusName: "",
       rulesCollapsed: false,
-      timer: { startTs:null, accumulatedMs:0, running:false, lastLapMs:0, laps:[] },
+      timer: { phase:"idle", startTs:null, accumulatedMs:0, laps:[] },
       history: []
     };
   }
@@ -577,11 +577,14 @@
 
   var tickInterval = null;
 
-  function currentMs(){
-    return state.timer.running ? (Date.now() - state.timer.startTs) : state.timer.accumulatedMs;
+  // state.timer.phase: "idle" (in attesa che finisci una serie) | "resting" (recupero in corso) | "paused" (recupero in pausa)
+  function currentRestMs(){
+    if(state.timer.phase === "resting") return Date.now() - state.timer.startTs;
+    if(state.timer.phase === "paused") return state.timer.accumulatedMs;
+    return 0;
   }
   function refreshTimerDisplay(){
-    document.getElementById("timerDisplay").textContent = fmt(currentMs());
+    document.getElementById("timerDisplay").textContent = fmt(currentRestMs());
   }
   function startTick(){
     if(tickInterval) return;
@@ -591,51 +594,85 @@
     clearInterval(tickInterval);
     tickInterval = null;
   }
-  function toggleTimer(){
-    if(state.timer.running){
-      state.timer.accumulatedMs = Date.now() - state.timer.startTs;
-      state.timer.running = false;
-      state.timer.startTs = null;
-      stopTick();
-      document.getElementById("timerToggle").textContent = "Avvia";
+  function updateTimerUI(){
+    var main = document.getElementById("timerMain");
+    var pause = document.getElementById("timerPause");
+    var hint = document.getElementById("timerHint");
+    if(state.timer.phase === "resting"){
+      main.textContent = "Via, riparto";
+      hint.textContent = "recupero in corso";
+      pause.disabled = false;
+      pause.textContent = "Pausa";
+    } else if(state.timer.phase === "paused"){
+      main.textContent = "Via, riparto";
+      hint.textContent = "recupero in pausa";
+      pause.disabled = false;
+      pause.textContent = "Riprendi";
     } else {
-      state.timer.startTs = Date.now() - state.timer.accumulatedMs;
-      state.timer.running = true;
+      main.textContent = "Fine serie";
+      hint.textContent = 'premi "Fine serie" appena finisci';
+      pause.disabled = true;
+      pause.textContent = "Pausa";
+    }
+  }
+  // Un solo bottone alterna tra "ho finito la serie" (fa partire il recupero)
+  // e "sto ripartendo" (ferma il recupero e lo registra). Così il tempo
+  // segnato è solo il recupero vero, senza il tempo speso a fare la serie.
+  function handleMainButton(){
+    if(state.timer.phase === "idle"){
+      state.timer.phase = "resting";
+      state.timer.startTs = Date.now();
+      state.timer.accumulatedMs = 0;
       startTick();
-      document.getElementById("timerToggle").textContent = "Pausa";
+    } else {
+      var total = currentRestMs();
+      stopTick();
+      state.timer.laps.unshift({
+        n: state.timer.laps.length + 1,
+        ms: total,
+        clock: new Date().toLocaleTimeString("it-IT", {hour:"2-digit", minute:"2-digit"})
+      });
+      state.timer.phase = "idle";
+      state.timer.startTs = null;
+      state.timer.accumulatedMs = 0;
+      renderLaps();
     }
     saveState();
     refreshTimerDisplay();
+    updateTimerUI();
   }
-  function lapTimer(){
-    var total = currentMs();
-    var delta = total - state.timer.lastLapMs;
-    state.timer.lastLapMs = total;
-    state.timer.laps.unshift({
-      n: state.timer.laps.length + 1,
-      deltaMs: delta,
-      clock: new Date().toLocaleTimeString("it-IT", {hour:"2-digit", minute:"2-digit"})
-    });
+  function handlePauseButton(){
+    if(state.timer.phase === "resting"){
+      state.timer.accumulatedMs = Date.now() - state.timer.startTs;
+      state.timer.phase = "paused";
+      state.timer.startTs = null;
+      stopTick();
+    } else if(state.timer.phase === "paused"){
+      state.timer.startTs = Date.now() - state.timer.accumulatedMs;
+      state.timer.phase = "resting";
+      startTick();
+    }
     saveState();
-    renderLaps();
+    refreshTimerDisplay();
+    updateTimerUI();
   }
   function resetTimer(){
     stopTick();
-    state.timer = { startTs:null, accumulatedMs:0, running:false, lastLapMs:0, laps:[] };
-    document.getElementById("timerToggle").textContent = "Avvia";
+    state.timer = { phase:"idle", startTs:null, accumulatedMs:0, laps:[] };
     saveState();
     refreshTimerDisplay();
+    updateTimerUI();
     renderLaps();
   }
   function renderLaps(){
     var log = document.getElementById("timerLog");
     if(!state.timer.laps.length){
-      log.innerHTML = '<p class="timer-bar__empty">Le serie che segni compariranno qui, con il tempo di recupero rispetto alla precedente.</p>';
+      log.innerHTML = '<p class="timer-bar__empty">I recuperi che segni con "Fine serie" e "Via, riparto" compariranno qui.</p>';
       return;
     }
     log.innerHTML = state.timer.laps.map(function(l){
-      var cls = l.deltaMs < MIN_REST ? "lap-short" : (l.deltaMs > MAX_REST ? "lap-long" : "lap-good");
-      return '<div class="lap ' + cls + '"><span class="lap__n">Serie ' + l.n + '</span><span class="lap__delta">' + fmt(l.deltaMs) + '</span><span class="lap__clock">' + l.clock + '</span></div>';
+      var cls = l.ms < MIN_REST ? "lap-short" : (l.ms > MAX_REST ? "lap-long" : "lap-good");
+      return '<div class="lap ' + cls + '"><span class="lap__n">Serie ' + l.n + '</span><span class="lap__delta">' + fmt(l.ms) + '</span><span class="lap__clock">' + l.clock + '</span></div>';
     }).join("");
   }
 
@@ -817,20 +854,18 @@
       saveState();
     });
 
-    document.getElementById("timerToggle").addEventListener("click", toggleTimer);
-    document.getElementById("timerLap").addEventListener("click", lapTimer);
+    document.getElementById("timerMain").addEventListener("click", handleMainButton);
+    document.getElementById("timerPause").addEventListener("click", handlePauseButton);
     document.getElementById("timerReset").addEventListener("click", function(){
-      if(confirm("Azzerare il cronometro e la lista delle serie segnate?")) resetTimer();
+      if(confirm("Azzerare il recupero in corso e la lista delle serie segnate?")) resetTimer();
     });
     document.getElementById("timerExpand").addEventListener("click", function(){
       var bar = document.getElementById("timerBar");
       var open = bar.classList.toggle("is-open");
       document.getElementById("timerExpand").setAttribute("aria-expanded", open ? "true" : "false");
     });
-    if(state.timer.running){
-      document.getElementById("timerToggle").textContent = "Pausa";
-      startTick();
-    }
+    if(state.timer.phase === "resting") startTick();
+    updateTimerUI();
     refreshTimerDisplay();
     renderLaps();
 
